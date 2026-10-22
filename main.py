@@ -15,23 +15,8 @@ ALLOWED_HOSTS = {
     "www.cricheroes.com",
 }
 
-FIELDS = [
-    "player_name",
-    "total_runs",
-    "total_wickets",
-    "strike_rate",
-    "bowling_economy",
-    "highest_score",
-]
-
-
 class PlayerRequest(BaseModel):
     url: HttpUrl
-
-
-def valid_host(url):
-    host = urlparse(url).hostname
-    return host in ALLOWED_HOSTS
 
 
 @app.get("/")
@@ -45,75 +30,72 @@ def home():
 @app.post("/player")
 def get_player(request: PlayerRequest):
     url = str(request.url)
+    parsed = urlparse(url)
 
-    if not valid_host(url):
+    if parsed.hostname not in ALLOWED_HOSTS:
         raise HTTPException(400, "Unsupported player URL")
 
-    if not re.search(r"/player/([A-Za-z0-9]+)", urlparse(url).path):
+    # Support both direct profile URLs and share URLs
+    match = re.search(
+        r"/player-profile/(\d+)|/player/([A-Za-z0-9]+)",
+        parsed.path
+    )
+
+    if not match:
         raise HTTPException(400, "Invalid player URL")
+
+    player_id = match.group(1) or match.group(2)
 
     try:
         response = requests.get(
             url,
             headers={"User-Agent": "Mozilla/5.0"},
-            timeout=20,
+            timeout=25,
             allow_redirects=True,
         )
-    except requests.RequestException:
+        response.raise_for_status()
+    except requests.RequestException as exc:
         raise HTTPException(
-            502, "Could not access the public profile"
+            502, f"Could not access player profile: {exc}"
         )
 
-    if not valid_host(response.url):
+    if urlparse(response.url).hostname not in ALLOWED_HOSTS:
         raise HTTPException(502, "Unexpected redirect host")
 
     soup = BeautifulSoup(response.text, "html.parser")
+    page_text = " ".join(soup.stripped_strings)
 
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    title = soup.title.get_text(" ", strip=True) if soup.title else None
-    text = " ".join(soup.stripped_strings)
-
+    # Try to read statistics from the page text
     patterns = {
-        "total_runs": r"\b(\d[\d,]*)\s+Runs\b",
-        "total_wickets": r"\b(\d[\d,]*)\s+Wickets\b",
-        "strike_rate": r"\b([\d.]+)\s+SR\b",
-        "bowling_economy": r"\b([\d.]+)\s+Economy\b",
-        "highest_score": r"\b(\d+)\s+(?:HS|Highest Score)\b",
+        "total_runs": r"(\d[\d,]*)\s*Runs\b",
+        "total_wickets": r"(\d[\d,]*)\s*Wickets?\b",
+        "matches": r"(\d[\d,]*)\s*Matches\b",
+        "strike_rate": r"([\d.]+)\s*SR\b",
+        "bowling_economy": r"([\d.]+)\s*Economy\b",
+        "highest_score": r"(\d+)\s*(?:HS|Highest Score)\b",
+        "fifties": r"(\d+)\s*50s\b",
+        "hundreds": r"(\d+)\s*100s\b",
     }
 
     stats = {}
     for field, pattern in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE)
+        found = re.search(pattern, page_text, re.IGNORECASE)
         stats[field] = (
-            match.group(1).replace(",", "")
-            if match else None
+            found.group(1).replace(",", "")
+            if found else None
         )
 
-    name = None
-    if soup.title:
-        name = title.split("|")[0].strip()
+    title = soup.title.get_text(" ", strip=True) if soup.title else None
+    player_name = title.split("|")[0].strip() if title else None
 
-    stats["player_name"] = name
-
-    found = sum(value is not None for value in stats.values())
+    stats["player_name"] = player_name
 
     return {
-        "status": "success" if found else "page_unreadable",
-        "player_id": re.search(
-            r"/player/([A-Za-z0-9]+)",
-            urlparse(url).path
-        ).group(1),
+        "status": "success" if any(
+            value is not None for value in stats.values()
+        ) else "page_unreadable",
+        "player_id": player_id,
         "player_url": url,
         "resolved_url": response.url,
-        "http_status": response.status_code,
         **stats,
-        "message": (
-            "Some public HTML fields were detected."
-            if found else
-            "No supported statistics found in HTML. "
-            "The page may require JavaScript or another "
-            "authorized data source."
-        )
     }
