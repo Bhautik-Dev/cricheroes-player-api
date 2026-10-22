@@ -1,4 +1,4 @@
-```python
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
 from urllib.parse import urlparse
@@ -9,8 +9,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
 class PlayerRequest(BaseModel):
     url: HttpUrl
+
 
 @app.get("/")
 def home():
@@ -27,17 +29,20 @@ def home():
         ]
     }
 
+
 @app.post("/player")
 def get_player(request: PlayerRequest):
     url = str(request.url)
     parsed = urlparse(url)
 
-    if parsed.hostname not in {
+    allowed_hosts = {
         "chshare.link",
         "www.chshare.link",
         "cricheroes.com",
         "www.cricheroes.com"
-    }:
+    }
+
+    if parsed.hostname not in allowed_hosts:
         raise HTTPException(
             status_code=400,
             detail="Unsupported player URL"
@@ -54,11 +59,9 @@ def get_player(request: PlayerRequest):
             detail="Player ID not found in URL"
         )
 
-    player_id = match.group(1)
-
     return {
         "status": "pending_integration",
-        "player_id": player_id,
+        "player_id": match.group(1),
         "player_url": url,
         "player_name": None,
         "total_runs": None,
@@ -66,10 +69,5 @@ def get_player(request: PlayerRequest):
         "strike_rate": None,
         "bowling_economy": None,
         "highest_score": None,
-        "message": (
-            "Player URL parsed successfully. "
-            "Live CricHeroes data extraction "
-            "has not been connected yet."
-        )
+        "message": "Live CricHeroes data integration is not configured yet."
     }
-```
